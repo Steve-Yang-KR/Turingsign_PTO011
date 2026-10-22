@@ -1,0 +1,38 @@
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+.coverage
+htmlcov/
+
+# Local secrets and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+credentials.json
+
+# Runtime and local databases
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+*.log
+logs/
+tmp/
+temp/
+
+# OS and editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
