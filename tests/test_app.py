@@ -48,6 +48,8 @@ def test_invited_user_isolation(tmp_path):
     token = invite.json()["invitation_token"]
     new = c.post('/v1/principals/register', json={"token":token,"display_name":"Principal Two","password":"LongEnoughSecondPassword!"})
     assert new.status_code == 200
+    assert new.json()["qr_data_uri"].startswith("data:image/png;base64,iVBORw0KGgo")
+    assert new.json()["otpauth_uri"].startswith("otpauth://totp/")
     pid = new.json()["principal_id"]
     assert pid != "principal-001"
     assert c.post('/v1/principals/register', json={"token":token,"display_name":"Again","password":"LongEnoughSecondPassword!"}).status_code == 403
