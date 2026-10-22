@@ -1,0 +1,1 @@
+{"$schema":"https://json-schema.org/draft/2020-12/schema","title":"PTO Trust Receipt v0.1.1","type":"object","required":["receipt","signature_alg","signature","public_key"],"properties":{"receipt":{"type":"object"},"signature_alg":{"const":"Ed25519"},"signature":{"type":"string"},"public_key":{"type":"string"}}}
