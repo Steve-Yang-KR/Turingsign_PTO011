@@ -1,0 +1,33 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: pto
+      POSTGRES_USER: pto
+      POSTGRES_PASSWORD: pto-alpha-only-change-me
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pto -d pto"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    volumes:
+      - pto_db:/var/lib/postgresql/data
+  app:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    ports: ["8000:8000"]
+    environment:
+      ENVIRONMENT: US-CA-PRINCIPAL-001-ALPHA
+      DATABASE_URL: postgresql+psycopg://pto:pto-alpha-only-change-me@db:5432/pto
+      PTO_DATA_DIR: /app/data
+      PTO_SETUP_TOKEN: ${PTO_SETUP_TOKEN:-local-alpha-setup-change-me}
+      PTO_SECURE_COOKIE: ${PTO_SECURE_COOKIE:-0}
+    volumes:
+      - pto_keys:/app/data
+    depends_on:
+      db:
+        condition: service_healthy
+volumes:
+  pto_db:
+  pto_keys:
