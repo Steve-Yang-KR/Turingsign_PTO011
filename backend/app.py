@@ -248,6 +248,11 @@ def create_app(database_url: Optional[str] = None, data_dir: Optional[Path] = No
     def root():
         return FileResponse(FRONTEND / "index.html")
 
+    @app.get("/alpha")
+    @app.get("/alpha/")
+    def alpha():
+        return FileResponse(FRONTEND / "alpha.html")
+
     @app.get("/healthz")
     def healthz():
         return {"status": "ok", "version": "0.1.1", "environment": os.getenv("ENVIRONMENT", "US-CA-ALPHA")}
