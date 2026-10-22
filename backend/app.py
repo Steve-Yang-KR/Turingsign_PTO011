@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import base64
+import io
 import json
 import os
 import uuid
@@ -14,6 +16,7 @@ from fastapi import Cookie, Depends, FastAPI, Header, HTTPException, Request, Re
 from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+import qrcode
 
 from backend.db import Database
 from backend.policy import PolicyEngine
@@ -379,7 +382,14 @@ def create_app(database_url: Optional[str] = None, data_dir: Optional[Path] = No
                 raise HTTPException(409, "Invitation already claimed")
             conn.execute(sql_text("INSERT INTO principals(principal_id,display_name,email,password_hash,totp_secret,is_active,created_at) VALUES (:p,:n,:e,:h,:s,0,:t)"), {
                 "p": pid, "n": req.display_name, "e": row["email"], "h": password_hash, "s": secret, "t": utcnow()})
-        return {"principal_id": pid, "email": row["email"], "totp_secret": secret, "otpauth_uri": otpauth_uri(secret, row["email"])}
+        uri = otpauth_uri(secret, row["email"])
+        qr = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_M, box_size=6, border=4)
+        qr.add_data(uri)
+        qr.make(fit=True)
+        buffer = io.BytesIO()
+        qr.make_image(fill_color="black", back_color="white").save(buffer, format="PNG")
+        return {"principal_id": pid, "email": row["email"], "totp_secret": secret,
+                "otpauth_uri": uri, "qr_data_uri": "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")}
 
     @app.post("/v1/principals/register/confirm")
     def confirm_invited(req: InviteConfirm):
