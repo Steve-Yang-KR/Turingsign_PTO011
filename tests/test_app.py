@@ -39,3 +39,33 @@ def test_delegation_withholds_sensitive_fields(tmp_path):
     c, app=client(tmp_path); activate(c,app)
     r=c.post('/v1/delegations',json={"source_agent_id":"health-agent-001","target_agent_id":"financial-agent-001","payload":{"provider":"X","amount":10,"currency":"USD","diagnosis":"secret"},"ttl_minutes":60})
     data=r.json()['assertion']['disclosed']; assert 'provider' in data and 'diagnosis' not in data
+
+def test_invited_user_isolation(tmp_path):
+    c, app = client(tmp_path)
+    admin_secret = activate(c, app)
+    invite = c.post('/v1/principals/invitations', json={"email":"user2@example.com","totp_code":totp_now(admin_secret)})
+    assert invite.status_code == 200
+    token = invite.json()["invitation_token"]
+    new = c.post('/v1/principals/register', json={"token":token,"display_name":"Principal Two","password":"LongEnoughSecondPassword!"})
+    assert new.status_code == 200
+    pid = new.json()["principal_id"]
+    assert pid != "principal-001"
+    assert c.post('/v1/principals/register', json={"token":token,"display_name":"Again","password":"LongEnoughSecondPassword!"}).status_code == 403
+    assert c.post('/v1/principals/register/confirm',json={"token":token,"code":totp_now(new.json()["totp_secret"])}).status_code == 200
+    own = c.post('/v1/vault', json={"domain":"financial","label":"private","payload":{"secret":"admin-only"}})
+    assert own.status_code == 200
+    admin_item = own.json()["item_id"]
+    c.post('/v1/logout')
+    assert c.post('/v1/login',json={"email":"user2@example.com","password":"LongEnoughSecondPassword!","code":totp_now(new.json()["totp_secret"])}).status_code == 200
+    assert c.get('/v1/vault').json() == []
+    assert c.get(f'/v1/vault/{admin_item}').status_code == 404
+    assert c.get('/v1/events').json() == []
+    assert c.get('/v1/approvals').json() == []
+    assert c.get('/v1/policy').status_code == 200
+    agents = c.get('/v1/agents').json()
+    assert len(agents) == 3 and all(a["principal_id"] == pid for a in agents)
+    own_action = c.post('/v1/action-intents',json={"principal_id":pid,"agent_id":agents[0]["agent_id"],"domain":agents[0]["domain"],"action":"organize_records"})
+    assert own_action.status_code == 200
+    cross = c.post('/v1/action-intents',json={"principal_id":"principal-001","agent_id":"financial-agent-001","domain":"financial","action":"analyze_accounts"})
+    assert cross.status_code == 403
+    assert c.post('/v1/principals/invitations',json={"email":"user3@example.com","totp_code":totp_now(new.json()["totp_secret"])}).status_code == 403

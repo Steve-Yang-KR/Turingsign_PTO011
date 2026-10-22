@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import uuid
+import secrets
 from datetime import datetime, timezone, timedelta
 from email.message import EmailMessage
 from pathlib import Path
@@ -35,6 +36,19 @@ class SetupRequest(BaseModel):
     display_name: str = Field(min_length=2, max_length=120)
     email: str = Field(min_length=3, max_length=255)
     password: str = Field(min_length=12, max_length=256)
+
+class InviteRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=255)
+    totp_code: str
+
+class InviteRegister(BaseModel):
+    token: str
+    display_name: str = Field(min_length=2, max_length=120)
+    password: str = Field(min_length=12, max_length=256)
+
+class InviteConfirm(BaseModel):
+    token: str
+    code: str
 
 class SetupConfirm(BaseModel):
     code: str
@@ -244,6 +258,32 @@ def create_app(database_url: Optional[str] = None, data_dir: Optional[Path] = No
             })
         return {"event_id": event_id, "decision": decision, "reason": reason, "approval_id": approval_id, "trust_receipt": signed}
 
+
+    def provision_principal(principal_id: str, display_name: str) -> None:
+        """Give each Principal distinct agents and policy, preserving principal-001 names."""
+        for domain, label in (("financial", "Financial Agent"), ("health", "Health Agent"), ("legal", "Legal Agent")):
+            aid = f"{domain}-agent-{principal_id.removeprefix('principal-')}"
+            db.execute("INSERT INTO agents(agent_id,principal_id,domain,display_name,status,created_at) VALUES (:a,:p,:d,:n,'active',:t)", {
+                "a": aid, "p": principal_id, "d": domain, "n": label, "t": utcnow()})
+            issue_agent_credential(aid)
+        policy = json.loads(DEFAULT_POLICY_PATH.read_text("utf-8"))
+        policy["principals"] = {principal_id: {"display_name": display_name, "jurisdiction": "US-CA"}}
+        policy = policy_engine.enforce_guardrails(policy)
+        encoded = json.dumps(policy, sort_keys=True)
+        phash = sha256_text(encoded)
+        version = f"PTO-US-CA-0.1.2-{principal_id[-8:]}"
+        receipt = keys.sign_receipt({"type": "POLICY_ACCEPTANCE", "principal_id": principal_id, "policy_hash": phash, "version": version, "authentication": "TOTP"})
+        db.execute("""INSERT INTO policy_versions(policy_id,principal_id,version,policy_hash,policy_json,active,created_at,approved_at,change_note,acceptance_receipt_json)
+                   VALUES (:id,:p,:v,:h,:j,1,:t,:t,:n,:r)""", {
+            "id": f"policy-{uuid.uuid4()}", "p": principal_id, "v": version, "h": phash, "j": encoded,
+            "t": utcnow(), "n": "Initial personal constitution", "r": json.dumps(receipt)})
+
+    def owned_agent(principal_id: str, domain: str) -> str:
+        agent = db.one("SELECT agent_id FROM agents WHERE principal_id=:p AND domain=:d AND status='active'", {"p": principal_id, "d": domain})
+        if not agent:
+            raise HTTPException(403, "No active agent for this principal and domain")
+        return agent["agent_id"]
+
     @app.get("/")
     def root():
         return FileResponse(FRONTEND / "index.html")
@@ -303,6 +343,57 @@ def create_app(database_url: Optional[str] = None, data_dir: Optional[Path] = No
             "id": pid, "h": phash, "j": pjson, "t": utcnow(), "r": json.dumps(acceptance)
         })
         return {"status": "active", "principal_id": "principal-001", "policy_version": "PTO-US-CA-0.1.1-001"}
+
+
+    @app.post("/v1/principals/invitations")
+    def create_invitation(req: InviteRequest, principal: Dict[str, Any] = Depends(principal_from_session)):
+        if principal["principal_id"] != "principal-001":
+            raise HTTPException(403, "Only the initial administrator may invite")
+        if not verify_totp(principal["totp_secret"], req.totp_code):
+            raise HTTPException(403, "Fresh authenticator code required")
+        email = req.email.strip().lower()
+        if "@" not in email:
+            raise HTTPException(400, "Invalid email")
+        if db.one("SELECT principal_id FROM principals WHERE lower(email)=:e", {"e": email}):
+            raise HTTPException(409, "Account already exists")
+        token = secrets.token_urlsafe(32)
+        expires = (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat()
+        db.execute("INSERT INTO principal_invitations(invite_id,email,token_hash,invited_by,expires_at,created_at) VALUES (:i,:e,:h,:p,:x,:t)", {
+            "i": f"invite-{uuid.uuid4()}", "e": email, "h": sha256_text(token),
+            "p": principal["principal_id"], "x": expires, "t": utcnow()})
+        return {"invitation_token": token, "email": email, "expires_at": expires, "note": "Show only once. Send using a private channel."}
+
+    @app.post("/v1/principals/register")
+    def register_invited(req: InviteRegister):
+        row = db.one("SELECT * FROM principal_invitations WHERE token_hash=:h", {"h": sha256_text(req.token)})
+        if not row or row["claimed_principal_id"] or datetime.fromisoformat(row["expires_at"]) <= datetime.now(timezone.utc):
+            raise HTTPException(403, "Invalid, used or expired invitation")
+        pid = f"principal-{uuid.uuid4().hex[:16]}"
+        password_hash = passwords.hash(req.password)
+        secret = generate_totp_secret()
+        # Atomic claim and account creation on the same database transaction.
+        from sqlalchemy import text as sql_text
+        with db.engine.begin() as conn:
+            updated = conn.execute(sql_text("UPDATE principal_invitations SET claimed_principal_id=:p WHERE invite_id=:i AND claimed_principal_id IS NULL"), {"p": pid, "i": row["invite_id"]})
+            if updated.rowcount != 1:
+                raise HTTPException(409, "Invitation already claimed")
+            conn.execute(sql_text("INSERT INTO principals(principal_id,display_name,email,password_hash,totp_secret,is_active,created_at) VALUES (:p,:n,:e,:h,:s,0,:t)"), {
+                "p": pid, "n": req.display_name, "e": row["email"], "h": password_hash, "s": secret, "t": utcnow()})
+        return {"principal_id": pid, "email": row["email"], "totp_secret": secret, "otpauth_uri": otpauth_uri(secret, row["email"])}
+
+    @app.post("/v1/principals/register/confirm")
+    def confirm_invited(req: InviteConfirm):
+        row = db.one("SELECT * FROM principal_invitations WHERE token_hash=:h", {"h": sha256_text(req.token)})
+        if not row or not row["claimed_principal_id"]:
+            raise HTTPException(403, "Invalid invitation")
+        principal = db.one("SELECT * FROM principals WHERE principal_id=:p", {"p": row["claimed_principal_id"]})
+        if not principal or principal["is_active"]:
+            raise HTTPException(409, "Registration already completed")
+        if not verify_totp(principal["totp_secret"], req.code):
+            raise HTTPException(403, "Invalid authenticator code")
+        provision_principal(principal["principal_id"], principal["display_name"])
+        db.execute("UPDATE principals SET is_active=1 WHERE principal_id=:p", {"p": principal["principal_id"]})
+        return {"status": "active", "principal_id": principal["principal_id"]}
 
     @app.post("/v1/login")
     def login(req: LoginRequest, response: Response):
@@ -370,7 +461,7 @@ def create_app(database_url: Optional[str] = None, data_dir: Optional[Path] = No
             raise HTTPException(409, "Approval already decided")
         intent = json.loads(row["intent_json"])
         final_decision = "AUTO" if req.decision == "APPROVE" else "DENY"
-        reason = "Principal #001 explicitly approved exception" if req.decision == "APPROVE" else "Principal #001 denied exception"
+        reason = "Principal explicitly approved exception" if req.decision == "APPROVE" else "Principal denied exception"
         final_event_id, receipt = save_event(intent, final_decision, reason, {"human_approval": req.decision, "approval_id": approval_id, "note": req.note}, parent_event_id=row["event_id"])
         db.execute("UPDATE approvals SET status='DECIDED',decided_at=:t,decision=:d,note=:n,final_event_id=:f WHERE approval_id=:a", {
             "t": utcnow(), "d": req.decision, "n": req.note, "f": final_event_id, "a": approval_id
@@ -478,7 +569,7 @@ def create_app(database_url: Optional[str] = None, data_dir: Optional[Path] = No
 
     @app.post("/v1/operational/calendar")
     def operational_calendar(req: CalendarAction, principal: Dict[str, Any] = Depends(principal_from_session)):
-        intent = ActionIntent(agent_id="health-agent-001", domain="health", action="schedule_appointment", purpose="Prepare user-controlled calendar event").model_dump()
+        intent = ActionIntent(principal_id=principal["principal_id"], agent_id=owned_agent(principal["principal_id"], "health"), domain="health", action="schedule_appointment", purpose="Prepare user-controlled calendar event").model_dump()
         result = evaluate(intent, principal, None)
         if result["decision"] not in ("AUTO", "NOTIFY"):
             return result
@@ -488,7 +579,7 @@ def create_app(database_url: Optional[str] = None, data_dir: Optional[Path] = No
 
     @app.post("/v1/operational/email-draft")
     def operational_email(req: EmailDraftAction, principal: Dict[str, Any] = Depends(principal_from_session)):
-        intent = ActionIntent(agent_id="legal-agent-001", domain="legal", action="draft_response", counterparty=req.to, purpose="Prepare user-controlled email draft").model_dump()
+        intent = ActionIntent(principal_id=principal["principal_id"], agent_id=owned_agent(principal["principal_id"], "legal"), domain="legal", action="draft_response", counterparty=req.to, purpose="Prepare user-controlled email draft").model_dump()
         result = evaluate(intent, principal, None)
         if result["decision"] not in ("AUTO", "NOTIFY"):
             return result

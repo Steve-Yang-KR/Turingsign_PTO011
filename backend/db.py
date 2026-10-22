@@ -86,6 +86,15 @@ SCHEMA = [
  assertion_json TEXT NOT NULL,
  receipt_json TEXT NOT NULL
 )""",
+"""CREATE TABLE IF NOT EXISTS principal_invitations (
+ invite_id VARCHAR(128) PRIMARY KEY,
+ email VARCHAR(255) NOT NULL,
+ token_hash VARCHAR(128) NOT NULL UNIQUE,
+ invited_by VARCHAR(128) NOT NULL,
+ expires_at VARCHAR(64) NOT NULL,
+ created_at VARCHAR(64) NOT NULL,
+ claimed_principal_id VARCHAR(128)
+)""",
 ]
 
 class Database:
