@@ -1,0 +1,34 @@
+{
+  "policy_version": "PTO-US-CA-0.1.1-template",
+  "principals": {
+    "principal-001": {"display_name": "Principal #001", "jurisdiction": "US-CA"}
+  },
+  "rules": {
+    "financial": {
+      "analyze_accounts": {"default": "AUTO", "reason": "Read/analyze only"},
+      "pay_recurring_bill": {"default": "NOTIFY", "approve_above": 500, "deny_above": 10000, "required_attributes": ["approved_payee"], "reason": "Approved recurring payment"},
+      "pay_new_beneficiary": {"default": "APPROVE", "reason": "New beneficiary requires human approval"},
+      "investment_recommendation": {"default": "AUTO", "reason": "Recommendation only; no trade execution"},
+      "execute_investment": {"default": "DENY", "reason": "Alpha does not execute securities transactions"}
+    },
+    "health": {
+      "organize_records": {"default": "AUTO", "reason": "Private organization of user-provided data"},
+      "schedule_appointment": {"default": "AUTO", "reason": "Low-risk scheduling"},
+      "share_summary_existing_clinician": {"default": "NOTIFY", "required_attributes": ["clinician_verified"], "reason": "Existing verified clinician"},
+      "share_record_new_party": {"default": "APPROVE", "reason": "New disclosure recipient"},
+      "medication_change": {"default": "DENY", "reason": "Clinical decision outside Alpha authority"}
+    },
+    "legal": {
+      "summarize_document": {"default": "AUTO", "reason": "Document summarization only"},
+      "draft_response": {"default": "AUTO", "reason": "Draft only; not sent externally"},
+      "send_external_correspondence": {"default": "APPROVE", "reason": "External legal communication requires principal approval"},
+      "execute_agreement": {"default": "APPROVE", "reason": "Binding legal commitment requires principal approval"},
+      "legal_advice": {"default": "DENY", "reason": "Alpha does not provide final legal advice"}
+    }
+  },
+  "minimum_disclosure": {
+    "health->financial": ["provider", "amount", "currency", "invoice_id", "payment_authorized", "purpose_category", "expires_at"],
+    "legal->financial": ["payee", "amount", "currency", "invoice_id", "payment_authorized", "purpose_category", "expires_at"],
+    "financial->legal": ["payment_status", "payment_reference", "amount", "currency", "paid_at"]
+  }
+}
