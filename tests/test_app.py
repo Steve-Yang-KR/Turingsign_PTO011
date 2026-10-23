@@ -154,3 +154,17 @@ def test_self_signup_and_password_login(tmp_path, monkeypatch):
     assert ok.status_code == 200
     assert ok.json()["principal_id"] == pid
     assert c.post("/v1/auth/test-login", json={"username":"p@example.com","password":"LongEnoughPassword!"}).status_code == 401
+
+
+def test_email_shaped_test_user_id_and_password_length(tmp_path, monkeypatch):
+    monkeypatch.setenv("PTO_ENABLE_TEST_SIGNUP", "1")
+    c, app = client(tmp_path)
+    short = {"username":"sample@example.com","display_name":"Sample Test","password":"short"}
+    assert c.post("/v1/auth/test-signup", json=short).status_code == 422
+    good = {**short, "password":"ValidTestPassword123!"}
+    created = c.post("/v1/auth/test-signup", json=good)
+    assert created.status_code == 200, created.text
+    login = c.post("/v1/auth/test-login", json={"username":"sample@example.com","password":good["password"]})
+    assert login.status_code == 200, login.text
+    row = app.state.db.one("SELECT email FROM principals WHERE principal_id=:p", {"p":created.json()["principal_id"]})
+    assert row["email"] == "test:sample@example.com"
