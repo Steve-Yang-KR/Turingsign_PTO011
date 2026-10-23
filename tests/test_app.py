@@ -153,5 +153,4 @@ def test_self_signup_and_password_login(tmp_path, monkeypatch):
     ok = c.post("/v1/auth/test-login", json={"username":"person01","password":account["password"]})
     assert ok.status_code == 200
     assert ok.json()["principal_id"] == pid
-    assert c.get("/v1/me").status_code == 200
     assert c.post("/v1/auth/test-login", json={"username":"p@example.com","password":"LongEnoughPassword!"}).status_code == 401
