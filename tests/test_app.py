@@ -130,52 +130,31 @@ def test_admin_remove_permanently_deletes_account(tmp_path):
     assert c.get('/v1/admin/principals').status_code == 200
 
 
-def test_self_signup_disabled_by_default(tmp_path, monkeypatch):
-    monkeypatch.delenv("PTO_ENABLE_TEST_SIGNUP", raising=False)
-    c, app = client(tmp_path)
-    r = c.post("/v1/auth/test-signup", json={"username":"person01","display_name":"Test Person","password":"LongTestPassword123!"})
-    assert r.status_code == 404
-
-
-def test_self_signup_and_password_login(tmp_path, monkeypatch):
+def test_signup_requires_admin_approved_email(tmp_path, monkeypatch):
     monkeypatch.setenv("PTO_ENABLE_TEST_SIGNUP", "1")
     c, app = client(tmp_path)
-    activate(c, app)
-    account = {"username":"person01","display_name":"Test Person","password":"LongTestPassword123!"}
+    secret = activate(c, app)
+    account = {"username":"person@example.com","display_name":"Test Person","password":"abcd1234"}
+    assert c.post("/v1/auth/test-signup", json={**account,"username":"person01"}).status_code == 422
+    assert c.post("/v1/auth/test-signup", json=account).status_code == 403
+    assert c.post("/v1/admin/approved-emails", json={"email":account["username"],"totp_code":"000000"}).status_code == 403
+    approved = c.post("/v1/admin/approved-emails", json={"email":account["username"],"totp_code":totp_now(secret)})
+    assert approved.status_code == 200, approved.text
     r = c.post("/v1/auth/test-signup", json=account)
     assert r.status_code == 200, r.text
-    pid = r.json()["principal_id"]
-    assert pid != "principal-001"
-    assert app.state.db.one("SELECT principal_id FROM principals WHERE principal_id=:p", {"p":pid})
     assert c.post("/v1/auth/test-signup", json=account).status_code == 409
-    bad = c.post("/v1/auth/test-login", json={"username":"person01","password":"wrongPassword123"})
-    assert bad.status_code == 401
-    ok = c.post("/v1/auth/test-login", json={"username":"person01","password":account["password"]})
-    assert ok.status_code == 200
-    assert ok.json()["principal_id"] == pid
+    assert c.post("/v1/auth/test-login", json={"username":account["username"],"password":account["password"]}).status_code == 200
+    assert app.state.db.one("SELECT claimed_principal_id FROM approved_signup_emails WHERE email=:e", {"e":account["username"]})["claimed_principal_id"] == r.json()["principal_id"]
+
+
+def test_eight_character_email_signup_and_admin_preservation(tmp_path, monkeypatch):
+    monkeypatch.setenv("PTO_ENABLE_TEST_SIGNUP", "1")
+    c, app = client(tmp_path)
+    secret = activate(c, app)
+    assert c.post("/v1/auth/test-signup", json={"username":"user@example.com","display_name":"Test User","password":"abcdefg"}).status_code == 422
+    r = c.post("/v1/admin/approved-emails", json={"email":"user@example.com","totp_code":totp_now(secret)})
+    assert r.status_code == 200
+    good = c.post("/v1/auth/test-signup", json={"username":"user@example.com","display_name":"Test User","password":"abcdefgh"})
+    assert good.status_code == 200, good.text
     assert c.post("/v1/auth/test-login", json={"username":"p@example.com","password":"LongEnoughPassword!"}).status_code == 401
-
-
-def test_email_shaped_test_user_id_and_password_length(tmp_path, monkeypatch):
-    monkeypatch.setenv("PTO_ENABLE_TEST_SIGNUP", "1")
-    c, app = client(tmp_path)
-    short = {"username":"sample@example.com","display_name":"Sample Test","password":"short"}
-    assert c.post("/v1/auth/test-signup", json=short).status_code == 422
-    good = {**short, "password":"ValidTestPassword123!"}
-    created = c.post("/v1/auth/test-signup", json=good)
-    assert created.status_code == 200, created.text
-    login = c.post("/v1/auth/test-login", json={"username":"sample@example.com","password":good["password"]})
-    assert login.status_code == 200, login.text
-    row = app.state.db.one("SELECT email FROM principals WHERE principal_id=:p", {"p":created.json()["principal_id"]})
-    assert row["email"] == "test:sample@example.com"
-
-
-def test_test_signup_minimum_eight_character_password(tmp_path, monkeypatch):
-    monkeypatch.setenv("PTO_ENABLE_TEST_SIGNUP", "1")
-    c, app = client(tmp_path)
-    payload = {"username":"eightuser","display_name":"Eight User","password":"abc1234"}
-    assert c.post("/v1/auth/test-signup", json=payload).status_code == 422
-    payload["password"] = "abcd1234"
-    response = c.post("/v1/auth/test-signup", json=payload)
-    assert response.status_code == 200, response.text
-    assert c.post("/v1/auth/test-login", json={"username":"eightuser","password":"abcd1234"}).status_code == 200
+    assert app.state.db.one("SELECT is_active FROM principals WHERE principal_id='principal-001'")["is_active"] == 1
