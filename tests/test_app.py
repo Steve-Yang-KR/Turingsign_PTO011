@@ -130,31 +130,25 @@ def test_admin_remove_permanently_deletes_account(tmp_path):
     assert c.get('/v1/admin/principals').status_code == 200
 
 
-def test_signup_requires_admin_approved_email(tmp_path, monkeypatch):
+def test_email_signup_without_administrator_approval(tmp_path, monkeypatch):
     monkeypatch.setenv("PTO_ENABLE_TEST_SIGNUP", "1")
     c, app = client(tmp_path)
-    secret = activate(c, app)
-    account = {"username":"person@example.com","display_name":"Test Person","password":"abcd1234"}
+    activate(c, app)
+    account = {"username":"person@example.com","display_name":"Person","password":"abcd1234"}
     assert c.post("/v1/auth/test-signup", json={**account,"username":"person01"}).status_code == 422
-    assert c.post("/v1/auth/test-signup", json=account).status_code == 403
-    assert c.post("/v1/admin/approved-emails", json={"email":account["username"],"totp_code":"000000"}).status_code == 403
-    approved = c.post("/v1/admin/approved-emails", json={"email":account["username"],"totp_code":totp_now(secret)})
-    assert approved.status_code == 200, approved.text
-    r = c.post("/v1/auth/test-signup", json=account)
-    assert r.status_code == 200, r.text
+    created = c.post("/v1/auth/test-signup", json=account)
+    assert created.status_code == 200, created.text
     assert c.post("/v1/auth/test-signup", json=account).status_code == 409
     assert c.post("/v1/auth/test-login", json={"username":account["username"],"password":account["password"]}).status_code == 200
-    assert app.state.db.one("SELECT claimed_principal_id FROM approved_signup_emails WHERE email=:e", {"e":account["username"]})["claimed_principal_id"] == r.json()["principal_id"]
+    assert app.state.db.one("SELECT principal_id FROM principals WHERE principal_id='principal-001'") is not None
 
 
-def test_eight_character_email_signup_and_admin_preservation(tmp_path, monkeypatch):
+def test_eight_character_password_without_approval(tmp_path, monkeypatch):
     monkeypatch.setenv("PTO_ENABLE_TEST_SIGNUP", "1")
     c, app = client(tmp_path)
-    secret = activate(c, app)
-    assert c.post("/v1/auth/test-signup", json={"username":"user@example.com","display_name":"Test User","password":"abcdefg"}).status_code == 422
-    r = c.post("/v1/admin/approved-emails", json={"email":"user@example.com","totp_code":totp_now(secret)})
-    assert r.status_code == 200
-    good = c.post("/v1/auth/test-signup", json={"username":"user@example.com","display_name":"Test User","password":"abcdefgh"})
-    assert good.status_code == 200, good.text
+    activate(c, app)
+    short = {"username":"user@example.com","display_name":"User","password":"abcdefg"}
+    assert c.post("/v1/auth/test-signup", json=short).status_code == 422
+    created = c.post("/v1/auth/test-signup", json={**short,"password":"abcdefgh"})
+    assert created.status_code == 200, created.text
     assert c.post("/v1/auth/test-login", json={"username":"p@example.com","password":"LongEnoughPassword!"}).status_code == 401
-    assert app.state.db.one("SELECT is_active FROM principals WHERE principal_id='principal-001'")["is_active"] == 1
