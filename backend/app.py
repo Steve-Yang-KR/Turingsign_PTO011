@@ -442,14 +442,19 @@ def create_app(database_url: Optional[str] = None, data_dir: Optional[Path] = No
             raise HTTPException(404, "Principal not found")
         if target["email"].lower() != req.confirmation_email.strip().lower():
             raise HTTPException(400, "Confirmation email mismatch")
-        if not target["is_active"]:
-            raise HTTPException(409, "Principal already inactive")
         from sqlalchemy import text as sql_text
         with db.engine.begin() as conn:
-            conn.execute(sql_text("UPDATE principals SET is_active=0 WHERE principal_id=:p"), {"p":target_id})
-            conn.execute(sql_text("UPDATE agent_credentials SET revoked_at=:t WHERE revoked_at IS NULL AND agent_id IN (SELECT agent_id FROM agents WHERE principal_id=:p)"), {"p":target_id,"t":utcnow()})
-            conn.execute(sql_text("UPDATE agents SET status='revoked' WHERE principal_id=:p"), {"p":target_id})
-        return {"status":"removed","principal_id":target_id,"data_retained":True}
+            for table in ("agent_credentials", "approvals", "trust_events", "delegations", "vault_items", "policy_versions", "agents", "email_otp", "principal_invitations", "principals"):
+                if table == "agent_credentials":
+                    query = "DELETE FROM agent_credentials WHERE agent_id IN (SELECT agent_id FROM agents WHERE principal_id=:p)"
+                elif table == "email_otp":
+                    query = "DELETE FROM email_otp WHERE email=:e"
+                elif table == "principal_invitations":
+                    query = "DELETE FROM principal_invitations WHERE claimed_principal_id=:p OR lower(email)=:e"
+                else:
+                    query = f"DELETE FROM {table} WHERE principal_id=:p"
+                conn.execute(sql_text(query), {"p": target_id, "e": target["email"].lower()})
+        return {"status": "permanently_deleted", "principal_id": target_id, "data_retained": False}
 
     @app.post("/v1/principals/invitations")
     def create_invitation(req: InviteRequest, principal: Dict[str, Any] = Depends(principal_from_session)):
