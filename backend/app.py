@@ -43,13 +43,17 @@ class SetupRequest(BaseModel):
     password: str = Field(min_length=12, max_length=256)
 
 class TestSignupRequest(BaseModel):
-    username: str = Field(min_length=3, max_length=254, pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_.@+-]*$")
+    username: str = Field(min_length=6, max_length=254, pattern=r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
     display_name: str = Field(min_length=2, max_length=120)
     password: str = Field(min_length=8, max_length=256)
 
 class TestPasswordLogin(BaseModel):
     username: str
     password: str
+
+class ApproveUserEmail(BaseModel):
+    email: str = Field(min_length=6, max_length=254, pattern=r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$")
+    totp_code: str
 
 class AdminRemovePrincipal(BaseModel):
     totp_code: str
@@ -434,6 +438,30 @@ def create_app(database_url: Optional[str] = None, data_dir: Optional[Path] = No
         return {"status": "active", "principal_id": "principal-001", "policy_version": "PTO-US-CA-0.1.1-001"}
 
 
+    @app.post("/v1/admin/approved-emails")
+    def approve_signup_email(req: ApproveUserEmail, principal: Dict[str, Any] = Depends(principal_from_session)):
+        if principal["principal_id"] != "principal-001":
+            raise HTTPException(403, "Administrator only")
+        if not verify_totp(principal["totp_secret"], req.totp_code):
+            raise HTTPException(403, "Fresh administrator OTP required")
+        email = req.email.strip().lower()
+        if db.one("SELECT principal_id FROM principals WHERE lower(email) IN (:e,:legacy)", {"e":email,"legacy":"test:"+email}):
+            raise HTTPException(409, "Account already exists")
+        from sqlalchemy import text as sql_text
+        with db.engine.begin() as conn:
+            found = conn.execute(sql_text("SELECT email,claimed_principal_id FROM approved_signup_emails WHERE email=:e"),{"e":email}).first()
+            if found:
+                raise HTTPException(409, "Email already approved")
+            conn.execute(sql_text("INSERT INTO approved_signup_emails(email,approved_by,approved_at) VALUES (:e,:p,:t)"),
+                {"e":email,"p":principal["principal_id"],"t":utcnow()})
+        return {"status":"approved","email":email}
+
+    @app.get("/v1/admin/approved-emails")
+    def list_approved_signup_emails(principal: Dict[str, Any] = Depends(principal_from_session)):
+        if principal["principal_id"] != "principal-001":
+            raise HTTPException(403, "Administrator only")
+        return db.all("SELECT email,approved_at,claimed_principal_id FROM approved_signup_emails ORDER BY approved_at DESC")
+
     @app.get("/v1/admin/principals")
     def list_principals(principal: Dict[str, Any] = Depends(principal_from_session)):
         if principal["principal_id"] != "principal-001":
@@ -556,7 +584,7 @@ def create_app(database_url: Optional[str] = None, data_dir: Optional[Path] = No
     def test_signup(req: TestSignupRequest):
         if os.getenv("PTO_ENABLE_TEST_SIGNUP", "0") != "1":
             raise HTTPException(404, "Test signup disabled")
-        # Alpha only: username is stored in the existing email login field to avoid a schema migration.
+        # Keep existing test-prefixed IDs compatible without changing the database schema.
         username = "test:" + req.username.strip().lower()
         from sqlalchemy import text as sql_text
         pid = f"principal-{uuid.uuid4().hex[:16]}"
@@ -564,6 +592,10 @@ def create_app(database_url: Optional[str] = None, data_dir: Optional[Path] = No
             existing = conn.execute(sql_text("SELECT principal_id FROM principals WHERE lower(email)=:e"), {"e": username}).first()
             if existing:
                 raise HTTPException(409, "User ID already exists")
+            approved = conn.execute(sql_text("SELECT claimed_principal_id FROM approved_signup_emails WHERE email=:e"), {"e":req.username.strip().lower()}).first()
+            if not approved or approved[0] is not None:
+                raise HTTPException(403, "Email address not approved by administrator")
+            conn.execute(sql_text("UPDATE approved_signup_emails SET claimed_principal_id=:p WHERE email=:e AND claimed_principal_id IS NULL"), {"p":pid,"e":req.username.strip().lower()})
             conn.execute(sql_text("INSERT INTO principals(principal_id,display_name,email,password_hash,totp_secret,is_active,created_at) VALUES (:p,:n,:e,:h,:s,1,:t)"),
                 {"p": pid, "n": req.display_name, "e": username, "h": passwords.hash(req.password, min_length=8),
                  "s": generate_totp_secret(), "t": utcnow()})
