@@ -49,6 +49,10 @@ class InviteRegister(BaseModel):
     display_name: str = Field(min_length=2, max_length=120)
     password: str = Field(min_length=12, max_length=256)
 
+class ResumeMFARequest(BaseModel):
+    token: str
+    password: str
+
 class InviteConfirm(BaseModel):
     token: str
     code: str
@@ -390,6 +394,28 @@ def create_app(database_url: Optional[str] = None, data_dir: Optional[Path] = No
         qr.make_image(fill_color="black", back_color="white").save(buffer, format="PNG")
         return {"principal_id": pid, "email": row["email"], "totp_secret": secret,
                 "otpauth_uri": uri, "qr_data_uri": "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")}
+
+    @app.post("/v1/principals/register/resume")
+    def resume_mfa(req: ResumeMFARequest):
+        # A previously claimed invitation plus the account password are required.
+        # Never disclose the MFA enrollment secret to an unauthenticated email lookup.
+        row = db.one("SELECT * FROM principal_invitations WHERE token_hash=:h", {"h": sha256_text(req.token)})
+        if not row or not row["claimed_principal_id"]:
+            raise HTTPException(403, "Invalid recovery credentials")
+        principal = db.one("SELECT * FROM principals WHERE principal_id=:p AND lower(email)=:e", {
+            "p": row["claimed_principal_id"], "e": row["email"]})
+        if not principal or principal["is_active"] or not passwords.verify(principal["password_hash"], req.password):
+            raise HTTPException(403, "Invalid recovery credentials or account already active")
+        secret = principal["totp_secret"]
+        uri = otpauth_uri(secret, principal["email"])
+        qr = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_M, box_size=6, border=4)
+        qr.add_data(uri)
+        qr.make(fit=True)
+        buffer = io.BytesIO()
+        qr.make_image(fill_color="black", back_color="white").save(buffer, format="PNG")
+        return {"status": "pending_mfa", "principal_id": principal["principal_id"],
+                "totp_secret": secret, "otpauth_uri": uri,
+                "qr_data_uri": "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")}
 
     @app.post("/v1/principals/register/confirm")
     def confirm_invited(req: InviteConfirm):
