@@ -95,6 +95,12 @@ SCHEMA = [
  created_at VARCHAR(64) NOT NULL,
  claimed_principal_id VARCHAR(128)
 )""",
+"""CREATE TABLE IF NOT EXISTS approved_signup_emails (
+ email VARCHAR(255) PRIMARY KEY,
+ approved_by VARCHAR(128) NOT NULL,
+ approved_at VARCHAR(64) NOT NULL,
+ claimed_principal_id VARCHAR(128)
+)""",
 """CREATE TABLE IF NOT EXISTS email_otp (
  challenge_id VARCHAR(128) PRIMARY KEY,
  email VARCHAR(255) NOT NULL,
