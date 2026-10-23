@@ -105,3 +105,24 @@ def test_email_activation_preserves_existing_account(tmp_path):
     assert c.post('/v1/principals/email-activate/confirm',json={"email":"inactive@example.com","password":"LongEnoughActivationPass!","code":code}).status_code == 401
     assert app.state.db.one("SELECT is_active FROM principals WHERE principal_id=:p",{"p":pid})["is_active"] == 1
     assert c.post('/v1/login',json={"email":"p@example.com","password":"LongEnoughPassword!","code":totp_now(admin_secret)}).status_code == 200
+
+def test_admin_remove_preserves_account(tmp_path):
+    c, app = client(tmp_path)
+    secret = activate(c, app)
+    sent = []
+    app.state.send_email = lambda to, subject, body: sent.append(body)
+    assert c.get('/v1/admin/principals').status_code == 200
+    invite = c.post('/v1/principals/invitations',json={"email":"remove@example.com","totp_code":totp_now(secret)})
+    assert invite.status_code == 200
+    token = sent[-1].split("token is: ",1)[1].split(". Expires",1)[0]
+    created = c.post('/v1/principals/register',json={"token":token,"display_name":"Second User","password":"StrongPassForSecond!"})
+    pid = created.json()["principal_id"]
+    assert c.post('/v1/principals/email-activate',json={"email":"remove@example.com","password":"StrongPassForSecond!"}).status_code == 200
+    code = sent[-1].split("code is ",1)[1].split(".",1)[0]
+    assert c.post('/v1/principals/email-activate/confirm',json={"email":"remove@example.com","password":"StrongPassForSecond!","code":code}).status_code == 200
+    assert c.post('/v1/admin/principals/principal-001/remove',json={"confirmation_email":"p@example.com","totp_code":totp_now(secret)}).status_code == 403
+    assert c.post(f'/v1/admin/principals/{pid}/remove',json={"confirmation_email":"remove@example.com","totp_code":"000000" if totp_now(secret)!="000000" else "111111"}).status_code == 403
+    result=c.post(f'/v1/admin/principals/{pid}/remove',json={"confirmation_email":"remove@example.com","totp_code":totp_now(secret)})
+    assert result.status_code == 200 and result.json()["data_retained"]
+    assert app.state.db.one("SELECT is_active FROM principals WHERE principal_id=:p",{"p":pid})["is_active"] == 0
+    assert c.get('/v1/admin/principals').status_code == 200
