@@ -592,10 +592,6 @@ def create_app(database_url: Optional[str] = None, data_dir: Optional[Path] = No
             existing = conn.execute(sql_text("SELECT principal_id FROM principals WHERE lower(email)=:e"), {"e": username}).first()
             if existing:
                 raise HTTPException(409, "User ID already exists")
-            approved = conn.execute(sql_text("SELECT claimed_principal_id FROM approved_signup_emails WHERE email=:e"), {"e":req.username.strip().lower()}).first()
-            if not approved or approved[0] is not None:
-                raise HTTPException(403, "Email address not approved by administrator")
-            conn.execute(sql_text("UPDATE approved_signup_emails SET claimed_principal_id=:p WHERE email=:e AND claimed_principal_id IS NULL"), {"p":pid,"e":req.username.strip().lower()})
             conn.execute(sql_text("INSERT INTO principals(principal_id,display_name,email,password_hash,totp_secret,is_active,created_at) VALUES (:p,:n,:e,:h,:s,1,:t)"),
                 {"p": pid, "n": req.display_name, "e": username, "h": passwords.hash(req.password, min_length=8),
                  "s": generate_totp_secret(), "t": utcnow()})
