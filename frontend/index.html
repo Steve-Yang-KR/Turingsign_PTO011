@@ -53,8 +53,8 @@ input,textarea,select{width:100%;padding:10px;margin:5px 0 9px;border-radius:8px
 </div></section>
 </div>
 <script>
-async function testSignup(){const out=document.getElementById('testAccountOut');try{const r=await api('/v1/auth/test-signup','POST',{username:document.getElementById('testUserId').value,display_name:document.getElementById('testDisplayName').value,password:document.getElementById('testPassword').value});out.textContent=JSON.stringify(r,null,2)+'\\nNow click Sign in with User ID.';}catch(e){out.textContent=String(e)}}
-async function testLogin(){const out=document.getElementById('testAccountOut');try{const r=await api('/v1/auth/test-login','POST',{username:document.getElementById('testUserId').value,password:document.getElementById('testPassword').value});out.textContent=JSON.stringify(r,null,2);location.reload()}catch(e){out.textContent=String(e)}}
+async function testSignup(){const out=document.getElementById('testAccountOut');try{const r=await api('/v1/auth/test-signup',{method:'POST',body:JSON.stringify({username:document.getElementById('testUserId').value,display_name:document.getElementById('testDisplayName').value,password:document.getElementById('testPassword').value})});out.textContent=JSON.stringify(r,null,2)+'\\nNow click Sign in with User ID.';}catch(e){out.textContent=String(e)}}
+async function testLogin(){const out=document.getElementById('testAccountOut');try{const r=await api('/v1/auth/test-login',{method:'POST',body:JSON.stringify({username:document.getElementById('testUserId').value,password:document.getElementById('testPassword').value})});out.textContent=JSON.stringify(r,null,2);location.reload()}catch(e){out.textContent=String(e)}}
 function showTestAccount(){document.getElementById('testAccount').classList.remove('hide')}
 
 function togglePassword(id,button){const input=document.getElementById(id);const visible=input.type==='password';input.type=visible?'text':'password';button.textContent=visible?'Hide':'Show';button.setAttribute('aria-label',visible?'Hide password':'Show password');button.setAttribute('aria-pressed',String(visible));}
