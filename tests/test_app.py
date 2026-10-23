@@ -168,3 +168,14 @@ def test_email_shaped_test_user_id_and_password_length(tmp_path, monkeypatch):
     assert login.status_code == 200, login.text
     row = app.state.db.one("SELECT email FROM principals WHERE principal_id=:p", {"p":created.json()["principal_id"]})
     assert row["email"] == "test:sample@example.com"
+
+
+def test_test_signup_minimum_eight_character_password(tmp_path, monkeypatch):
+    monkeypatch.setenv("PTO_ENABLE_TEST_SIGNUP", "1")
+    c, app = client(tmp_path)
+    payload = {"username":"eightuser","display_name":"Eight User","password":"abc1234"}
+    assert c.post("/v1/auth/test-signup", json=payload).status_code == 422
+    payload["password"] = "abcd1234"
+    response = c.post("/v1/auth/test-signup", json=payload)
+    assert response.status_code == 200, response.text
+    assert c.post("/v1/auth/test-login", json={"username":"eightuser","password":"abcd1234"}).status_code == 200
