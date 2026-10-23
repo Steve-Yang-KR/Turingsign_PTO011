@@ -40,9 +40,9 @@ class PasswordService:
     def __init__(self):
         self.ph = PasswordHasher(time_cost=3, memory_cost=65536, parallelism=4)
 
-    def hash(self, password: str) -> str:
-        if len(password) < 12:
-            raise ValueError("Alpha password must be at least 12 characters")
+    def hash(self, password: str, min_length: int = 12) -> str:
+        if len(password) < min_length:
+            raise ValueError(f"Alpha password must be at least {min_length} characters")
         return self.ph.hash(password)
 
     def verify(self, password_hash: str, password: str) -> bool:

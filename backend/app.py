@@ -45,7 +45,7 @@ class SetupRequest(BaseModel):
 class TestSignupRequest(BaseModel):
     username: str = Field(min_length=3, max_length=254, pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_.@+-]*$")
     display_name: str = Field(min_length=2, max_length=120)
-    password: str = Field(min_length=12, max_length=256)
+    password: str = Field(min_length=8, max_length=256)
 
 class TestPasswordLogin(BaseModel):
     username: str
@@ -565,7 +565,7 @@ def create_app(database_url: Optional[str] = None, data_dir: Optional[Path] = No
             if existing:
                 raise HTTPException(409, "User ID already exists")
             conn.execute(sql_text("INSERT INTO principals(principal_id,display_name,email,password_hash,totp_secret,is_active,created_at) VALUES (:p,:n,:e,:h,:s,1,:t)"),
-                {"p": pid, "n": req.display_name, "e": username, "h": passwords.hash(req.password),
+                {"p": pid, "n": req.display_name, "e": username, "h": passwords.hash(req.password, min_length=8),
                  "s": generate_totp_secret(), "t": utcnow()})
         provision_principal(pid, req.display_name)
         return {"status": "registered", "principal_id": pid}
