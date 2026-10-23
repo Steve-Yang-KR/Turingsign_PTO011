@@ -42,6 +42,15 @@ class SetupRequest(BaseModel):
     email: str = Field(min_length=3, max_length=255)
     password: str = Field(min_length=12, max_length=256)
 
+class TestSignupRequest(BaseModel):
+    username: str = Field(min_length=3, max_length=64, pattern=r"^[a-zA-Z][a-zA-Z0-9_.-]*$")
+    display_name: str = Field(min_length=2, max_length=120)
+    password: str = Field(min_length=12, max_length=256)
+
+class TestPasswordLogin(BaseModel):
+    username: str
+    password: str
+
 class AdminRemovePrincipal(BaseModel):
     totp_code: str
     confirmation_email: str
@@ -542,6 +551,36 @@ def create_app(database_url: Optional[str] = None, data_dir: Optional[Path] = No
         db.execute("UPDATE principals SET is_active=1 WHERE principal_id=:p", {"p": principal["principal_id"]})
         return {"status": "active", "principal_id": principal["principal_id"]}
 
+
+    @app.post("/v1/auth/test-signup")
+    def test_signup(req: TestSignupRequest):
+        if os.getenv("PTO_ENABLE_TEST_SIGNUP", "0") != "1":
+            raise HTTPException(404, "Test signup disabled")
+        # Alpha only: username is stored in the existing email login field to avoid a schema migration.
+        username = req.username.strip().lower()
+        from sqlalchemy import text as sql_text
+        pid = f"principal-{uuid.uuid4().hex[:16]}"
+        with db.engine.begin() as conn:
+            existing = conn.execute(sql_text("SELECT principal_id FROM principals WHERE lower(email)=:e"), {"e": username}).first()
+            if existing:
+                raise HTTPException(409, "User ID already exists")
+            conn.execute(sql_text("INSERT INTO principals(principal_id,display_name,email,password_hash,totp_secret,is_active,created_at) VALUES (:p,:n,:e,:h,:s,1,:t)"),
+                {"p": pid, "n": req.display_name, "e": username, "h": passwords.hash(req.password),
+                 "s": generate_totp_secret(), "t": utcnow()})
+        provision_principal(pid)
+        return {"status": "registered", "principal_id": pid}
+
+    @app.post("/v1/auth/test-login")
+    def test_password_login(req: TestPasswordLogin, response: Response):
+        if os.getenv("PTO_ENABLE_TEST_SIGNUP", "0") != "1":
+            raise HTTPException(404, "Test login disabled")
+        principal = db.one("SELECT * FROM principals WHERE lower(email)=:e AND is_active=1", {"e": req.username.strip().lower()})
+        if not principal or principal["principal_id"] == "principal-001" or not passwords.verify(principal["password_hash"], req.password):
+            raise HTTPException(401, "Invalid credentials")
+        token = sessions.create(principal["principal_id"])
+        response.set_cookie("pto_session", token, httponly=True, samesite="strict",
+            secure=os.getenv("PTO_SECURE_COOKIE", "0") == "1", max_age=3600)
+        return {"status": "authenticated", "principal_id": principal["principal_id"]}
 
     @app.post("/v1/auth/email/start")
     def email_login_start(req: EmailCodeRequest):
