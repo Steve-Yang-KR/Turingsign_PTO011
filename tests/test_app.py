@@ -43,9 +43,11 @@ def test_delegation_withholds_sensitive_fields(tmp_path):
 def test_invited_user_isolation(tmp_path):
     c, app = client(tmp_path)
     admin_secret = activate(c, app)
+    sent = []
+    app.state.send_email = lambda to, subject, body: sent.append((to, subject, body))
     invite = c.post('/v1/principals/invitations', json={"email":"user2@example.com","totp_code":totp_now(admin_secret)})
     assert invite.status_code == 200
-    token = invite.json()["invitation_token"]
+    token = sent[-1][2].split("token is: ",1)[1].split(". Expires",1)[0]
     new = c.post('/v1/principals/register', json={"token":token,"display_name":"Principal Two","password":"LongEnoughSecondPassword!"})
     assert new.status_code == 200
     assert new.json()["qr_data_uri"].startswith("data:image/png;base64,iVBORw0KGgo")
@@ -66,7 +68,13 @@ def test_invited_user_isolation(tmp_path):
     assert own.status_code == 200
     admin_item = own.json()["item_id"]
     c.post('/v1/logout')
-    assert c.post('/v1/login',json={"email":"user2@example.com","password":"LongEnoughSecondPassword!","code":totp_now(new.json()["totp_secret"])}).status_code == 200
+    assert c.post('/v1/login',json={"email":"user2@example.com","password":"LongEnoughSecondPassword!","code":totp_now(new.json()["totp_secret"])}).status_code == 401
+    started = c.post('/v1/auth/email/start',json={"email":"user2@example.com","password":"LongEnoughSecondPassword!"})
+    assert started.status_code == 200
+    code = sent[-1][2].split("code is ",1)[1].split(".",1)[0]
+    assert c.post('/v1/auth/email/verify',json={"email":"user2@example.com","password":"LongEnoughSecondPassword!","code":"000000" if code!="000000" else "111111"}).status_code == 401
+    assert c.post('/v1/auth/email/verify',json={"email":"user2@example.com","password":"LongEnoughSecondPassword!","code":code}).status_code == 200
+    assert c.post('/v1/auth/email/verify',json={"email":"user2@example.com","password":"LongEnoughSecondPassword!","code":code}).status_code == 401
     assert c.get('/v1/vault').json() == []
     assert c.get(f'/v1/vault/{admin_item}').status_code == 404
     assert c.get('/v1/events').json() == []
@@ -79,3 +87,21 @@ def test_invited_user_isolation(tmp_path):
     cross = c.post('/v1/action-intents',json={"principal_id":"principal-001","agent_id":"financial-agent-001","domain":"financial","action":"analyze_accounts"})
     assert cross.status_code == 403
     assert c.post('/v1/principals/invitations',json={"email":"user3@example.com","totp_code":totp_now(new.json()["totp_secret"])}).status_code == 403
+
+def test_email_activation_preserves_existing_account(tmp_path):
+    c, app = client(tmp_path)
+    admin_secret = activate(c, app)
+    sent = []
+    app.state.send_email = lambda to, subject, body: sent.append(body)
+    r = c.post('/v1/principals/invitations',json={"email":"inactive@example.com","totp_code":totp_now(admin_secret)})
+    assert r.status_code == 200
+    token = sent[-1].split("token is: ",1)[1].split(". Expires",1)[0]
+    created = c.post('/v1/principals/register',json={"token":token,"display_name":"Incomplete","password":"LongEnoughActivationPass!"})
+    assert created.status_code == 200
+    pid = created.json()["principal_id"]
+    assert c.post('/v1/principals/email-activate',json={"email":"inactive@example.com","password":"LongEnoughActivationPass!"}).status_code == 200
+    code = sent[-1].split("code is ",1)[1].split(".",1)[0]
+    assert c.post('/v1/principals/email-activate/confirm',json={"email":"inactive@example.com","password":"LongEnoughActivationPass!","code":code}).status_code == 200
+    assert c.post('/v1/principals/email-activate/confirm',json={"email":"inactive@example.com","password":"LongEnoughActivationPass!","code":code}).status_code == 401
+    assert app.state.db.one("SELECT is_active FROM principals WHERE principal_id=:p",{"p":pid})["is_active"] == 1
+    assert c.post('/v1/login',json={"email":"p@example.com","password":"LongEnoughPassword!","code":totp_now(admin_secret)}).status_code == 200
