@@ -45,7 +45,7 @@ class SetupRequest(BaseModel):
 class TestSignupRequest(BaseModel):
     username: str = Field(min_length=3, max_length=254, pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_.@+-]*$")
     display_name: str = Field(min_length=2, max_length=120)
-    password: str = Field(min_length=12, max_length=256)
+    password: str = Field(min_length=8, max_length=256)
 
 class TestPasswordLogin(BaseModel):
     username: str
