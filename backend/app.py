@@ -548,7 +548,7 @@ def create_app(database_url: Optional[str] = None, data_dir: Optional[Path] = No
     @app.post("/v1/login")
     def login(req: LoginRequest, response: Response):
         principal = db.one("SELECT * FROM principals WHERE lower(email)=:e AND is_active=1", {"e": req.email.lower()})
-        if not principal or not passwords.verify(principal["password_hash"], req.password) or not verify_totp(principal["totp_secret"], req.code):
+        if not principal or principal["principal_id"] != "principal-001" or not passwords.verify(principal["password_hash"], req.password) or not verify_totp(principal["totp_secret"], req.code):
             raise HTTPException(401, "Invalid login")
         token = sessions.create(principal["principal_id"])
         response.set_cookie("pto_session", token, httponly=True, samesite="strict", secure=os.getenv("PTO_SECURE_COOKIE", "0") == "1", max_age=8 * 3600)
