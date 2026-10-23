@@ -42,6 +42,10 @@ class SetupRequest(BaseModel):
     email: str = Field(min_length=3, max_length=255)
     password: str = Field(min_length=12, max_length=256)
 
+class AdminRemovePrincipal(BaseModel):
+    totp_code: str
+    confirmation_email: str
+
 class InviteRequest(BaseModel):
     email: str = Field(min_length=3, max_length=255)
     totp_code: str
@@ -420,6 +424,37 @@ def create_app(database_url: Optional[str] = None, data_dir: Optional[Path] = No
         })
         return {"status": "active", "principal_id": "principal-001", "policy_version": "PTO-US-CA-0.1.1-001"}
 
+
+    @app.get("/v1/admin/principals")
+    def list_principals(principal: Dict[str, Any] = Depends(principal_from_session)):
+        if principal["principal_id"] != "principal-001":
+            raise HTTPException(403, "Administrator only")
+        return db.all("SELECT principal_id,display_name,email,is_active,created_at FROM principals ORDER BY created_at DESC")
+
+    @app.post("/v1/admin/principals/{target_id}/remove")
+    def remove_principal(target_id: str, req: AdminRemovePrincipal, principal: Dict[str, Any] = Depends(principal_from_session)):
+        if principal["principal_id"] != "principal-001" or target_id == "principal-001":
+            raise HTTPException(403, "Not authorized")
+        if not verify_totp(principal["totp_secret"], req.totp_code):
+            raise HTTPException(403, "Fresh admin OTP required")
+        target = db.one("SELECT * FROM principals WHERE principal_id=:p", {"p":target_id})
+        if not target:
+            raise HTTPException(404, "Principal not found")
+        if target["email"].lower() != req.confirmation_email.strip().lower():
+            raise HTTPException(400, "Confirmation email mismatch")
+        from sqlalchemy import text as sql_text
+        with db.engine.begin() as conn:
+            for table in ("agent_credentials", "approvals", "trust_events", "delegations", "vault_items", "policy_versions", "agents", "email_otp", "principal_invitations", "principals"):
+                if table == "agent_credentials":
+                    query = "DELETE FROM agent_credentials WHERE agent_id IN (SELECT agent_id FROM agents WHERE principal_id=:p)"
+                elif table == "email_otp":
+                    query = "DELETE FROM email_otp WHERE email=:e"
+                elif table == "principal_invitations":
+                    query = "DELETE FROM principal_invitations WHERE claimed_principal_id=:p OR lower(email)=:e"
+                else:
+                    query = f"DELETE FROM {table} WHERE principal_id=:p"
+                conn.execute(sql_text(query), {"p": target_id, "e": target["email"].lower()})
+        return {"status": "permanently_deleted", "principal_id": target_id, "data_retained": False}
 
     @app.post("/v1/principals/invitations")
     def create_invitation(req: InviteRequest, principal: Dict[str, Any] = Depends(principal_from_session)):
