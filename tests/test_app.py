@@ -106,7 +106,7 @@ def test_email_activation_preserves_existing_account(tmp_path):
     assert app.state.db.one("SELECT is_active FROM principals WHERE principal_id=:p",{"p":pid})["is_active"] == 1
     assert c.post('/v1/login',json={"email":"p@example.com","password":"LongEnoughPassword!","code":totp_now(admin_secret)}).status_code == 200
 
-def test_admin_remove_preserves_account(tmp_path):
+def test_admin_remove_permanently_deletes_account(tmp_path):
     c, app = client(tmp_path)
     secret = activate(c, app)
     sent = []
@@ -123,6 +123,8 @@ def test_admin_remove_preserves_account(tmp_path):
     assert c.post('/v1/admin/principals/principal-001/remove',json={"confirmation_email":"p@example.com","totp_code":totp_now(secret)}).status_code == 403
     assert c.post(f'/v1/admin/principals/{pid}/remove',json={"confirmation_email":"remove@example.com","totp_code":"000000" if totp_now(secret)!="000000" else "111111"}).status_code == 403
     result=c.post(f'/v1/admin/principals/{pid}/remove',json={"confirmation_email":"remove@example.com","totp_code":totp_now(secret)})
-    assert result.status_code == 200 and result.json()["data_retained"]
-    assert app.state.db.one("SELECT is_active FROM principals WHERE principal_id=:p",{"p":pid})["is_active"] == 0
+    assert result.status_code == 200 and result.json()["data_retained"] is False
+    assert app.state.db.one("SELECT principal_id FROM principals WHERE principal_id=:p",{"p":pid}) is None
+    assert app.state.db.one("SELECT agent_id FROM agents WHERE principal_id=:p",{"p":pid}) is None
+    assert app.state.db.one("SELECT policy_id FROM policy_versions WHERE principal_id=:p",{"p":pid}) is None
     assert c.get('/v1/admin/principals').status_code == 200
