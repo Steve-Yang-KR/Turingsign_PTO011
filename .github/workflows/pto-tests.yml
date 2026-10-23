@@ -1,7 +1,7 @@
 name: PTO tests
 on:
   push:
-    branches: [feature/multi-principal-v012]
+    branches: [main, feature/multi-principal-v012]
   pull_request:
     branches: [main]
 jobs:
