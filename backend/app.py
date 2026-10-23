@@ -312,21 +312,39 @@ def create_app(database_url: Optional[str] = None, data_dir: Optional[Path] = No
 
 
     def email_sender(to: str, subject: str, body: str) -> None:
-        api_key = os.getenv("RESEND_API_KEY")
-        sender = os.getenv("PTO_EMAIL_FROM")
-        if not api_key or not sender:
-            raise HTTPException(503, "Email delivery is not configured")
-        payload = json.dumps({"from": sender, "to": [to], "subject": subject, "text": body}).encode()
-        req = urllib.request.Request("https://api.resend.com/emails", data=payload,
-            headers={"Authorization": "Bearer " + api_key, "Content-Type": "application/json"}, method="POST")
+        """Gmail/Workspace SMTP using TLS; no third-party email API required."""
+        import smtplib
+        import ssl
+        from email.message import EmailMessage
+        username = os.getenv("PTO_SMTP_USER", "").strip()
+        password = os.getenv("PTO_SMTP_APP_PASSWORD", "")
+        sender = os.getenv("PTO_EMAIL_FROM", username).strip()
+        host = os.getenv("PTO_SMTP_HOST", "smtp.gmail.com")
+        port = int(os.getenv("PTO_SMTP_PORT", "587"))
+        if not username or not password or not sender:
+            raise HTTPException(503, "SMTP email delivery is not configured")
+        if host != "smtp.gmail.com" or port not in (465, 587):
+            raise HTTPException(503, "Unsupported SMTP server configuration")
+        msg = EmailMessage()
+        msg["From"] = sender
+        msg["To"] = to
+        msg["Subject"] = subject
+        msg.set_content(body)
         try:
-            with urllib.request.urlopen(req, timeout=10) as response:
-                if response.status not in (200, 201):
-                    raise HTTPException(502, "Email delivery failed")
-        except HTTPException:
-            raise
-        except Exception:
-            raise HTTPException(502, "Email delivery failed")
+            if port == 465:
+                with smtplib.SMTP_SSL(host, port, timeout=10, context=ssl.create_default_context()) as client:
+                    client.login(username, password)
+                    client.send_message(msg)
+            else:
+                with smtplib.SMTP(host, port, timeout=10) as client:
+                    client.ehlo()
+                    client.starttls(context=ssl.create_default_context())
+                    client.ehlo()
+                    client.login(username, password)
+                    client.send_message(msg)
+        except (smtplib.SMTPException, OSError):
+            # Never log credentials, message bodies or authentication codes.
+            raise HTTPException(502, "SMTP delivery failed; check Render plan and mail settings")
 
     app.state.send_email = email_sender
 
