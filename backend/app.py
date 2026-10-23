@@ -42,6 +42,10 @@ class SetupRequest(BaseModel):
     email: str = Field(min_length=3, max_length=255)
     password: str = Field(min_length=12, max_length=256)
 
+class AdminRemovePrincipal(BaseModel):
+    totp_code: str
+    confirmation_email: str
+
 class InviteRequest(BaseModel):
     email: str = Field(min_length=3, max_length=255)
     totp_code: str
@@ -420,6 +424,32 @@ def create_app(database_url: Optional[str] = None, data_dir: Optional[Path] = No
         })
         return {"status": "active", "principal_id": "principal-001", "policy_version": "PTO-US-CA-0.1.1-001"}
 
+
+    @app.get("/v1/admin/principals")
+    def list_principals(principal: Dict[str, Any] = Depends(principal_from_session)):
+        if principal["principal_id"] != "principal-001":
+            raise HTTPException(403, "Administrator only")
+        return db.all("SELECT principal_id,display_name,email,is_active,created_at FROM principals ORDER BY created_at DESC")
+
+    @app.post("/v1/admin/principals/{target_id}/remove")
+    def remove_principal(target_id: str, req: AdminRemovePrincipal, principal: Dict[str, Any] = Depends(principal_from_session)):
+        if principal["principal_id"] != "principal-001" or target_id == "principal-001":
+            raise HTTPException(403, "Not authorized")
+        if not verify_totp(principal["totp_secret"], req.totp_code):
+            raise HTTPException(403, "Fresh admin OTP required")
+        target = db.one("SELECT * FROM principals WHERE principal_id=:p", {"p":target_id})
+        if not target:
+            raise HTTPException(404, "Principal not found")
+        if target["email"].lower() != req.confirmation_email.strip().lower():
+            raise HTTPException(400, "Confirmation email mismatch")
+        if not target["is_active"]:
+            raise HTTPException(409, "Principal already inactive")
+        from sqlalchemy import text as sql_text
+        with db.engine.begin() as conn:
+            conn.execute(sql_text("UPDATE principals SET is_active=0 WHERE principal_id=:p"), {"p":target_id})
+            conn.execute(sql_text("UPDATE agent_credentials SET revoked_at=:t WHERE revoked_at IS NULL AND agent_id IN (SELECT agent_id FROM agents WHERE principal_id=:p)"), {"p":target_id,"t":utcnow()})
+            conn.execute(sql_text("UPDATE agents SET status='revoked' WHERE principal_id=:p"), {"p":target_id})
+        return {"status":"removed","principal_id":target_id,"data_retained":True}
 
     @app.post("/v1/principals/invitations")
     def create_invitation(req: InviteRequest, principal: Dict[str, Any] = Depends(principal_from_session)):
