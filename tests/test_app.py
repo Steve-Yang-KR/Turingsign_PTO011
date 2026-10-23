@@ -53,7 +53,15 @@ def test_invited_user_isolation(tmp_path):
     pid = new.json()["principal_id"]
     assert pid != "principal-001"
     assert c.post('/v1/principals/register', json={"token":token,"display_name":"Again","password":"LongEnoughSecondPassword!"}).status_code == 403
+    bad_resume = c.post('/v1/principals/register/resume', json={"token":token,"password":"WrongPasswordThatIsLong"})
+    assert bad_resume.status_code == 403
+    resume = c.post('/v1/principals/register/resume', json={"token":token,"password":"LongEnoughSecondPassword!"})
+    assert resume.status_code == 200
+    assert resume.json()["status"] == "pending_mfa"
+    assert resume.json()["totp_secret"] == new.json()["totp_secret"]
+    assert resume.json()["qr_data_uri"].startswith("data:image/png;base64,iVBORw0KGgo")
     assert c.post('/v1/principals/register/confirm',json={"token":token,"code":totp_now(new.json()["totp_secret"])}).status_code == 200
+    assert c.post('/v1/principals/register/resume', json={"token":token,"password":"LongEnoughSecondPassword!"}).status_code == 403
     own = c.post('/v1/vault', json={"domain":"financial","label":"private","payload":{"secret":"admin-only"}})
     assert own.status_code == 200
     admin_item = own.json()["item_id"]
