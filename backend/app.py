@@ -7,6 +7,8 @@ import json
 import os
 import uuid
 import secrets
+import hmac
+import urllib.request
 from datetime import datetime, timezone, timedelta
 from email.message import EmailMessage
 from pathlib import Path
@@ -52,6 +54,19 @@ class InviteRegister(BaseModel):
 class ResumeMFARequest(BaseModel):
     token: str
     password: str
+
+class EmailCodeRequest(BaseModel):
+    email: str
+    password: str
+
+class EmailCodeVerify(BaseModel):
+    email: str
+    password: str
+    code: str
+
+class RegisterEmailCode(BaseModel):
+    token: str
+    code: str
 
 class InviteConfirm(BaseModel):
     token: str
@@ -291,6 +306,60 @@ def create_app(database_url: Optional[str] = None, data_dir: Optional[Path] = No
             raise HTTPException(403, "No active agent for this principal and domain")
         return agent["agent_id"]
 
+
+    def email_sender(to: str, subject: str, body: str) -> None:
+        api_key = os.getenv("RESEND_API_KEY")
+        sender = os.getenv("PTO_EMAIL_FROM")
+        if not api_key or not sender:
+            raise HTTPException(503, "Email delivery is not configured")
+        payload = json.dumps({"from": sender, "to": [to], "subject": subject, "text": body}).encode()
+        req = urllib.request.Request("https://api.resend.com/emails", data=payload,
+            headers={"Authorization": "Bearer " + api_key, "Content-Type": "application/json"}, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=10) as response:
+                if response.status not in (200, 201):
+                    raise HTTPException(502, "Email delivery failed")
+        except HTTPException:
+            raise
+        except Exception:
+            raise HTTPException(502, "Email delivery failed")
+
+    app.state.send_email = email_sender
+
+    def issue_email_code(email: str, purpose: str) -> None:
+        email = email.strip().lower()
+        now = datetime.now(timezone.utc)
+        last = db.one("SELECT created_at FROM email_otp WHERE email=:e AND purpose=:p ORDER BY created_at DESC LIMIT 1",
+                      {"e": email, "p": purpose})
+        if last and (now - datetime.fromisoformat(last["created_at"])).total_seconds() < 60:
+            raise HTTPException(429, "Please wait before requesting another code")
+        code = f"{secrets.randbelow(1000000):06d}"
+        key = keys.session_secret
+        digest = hmac.new(key, (email + "|" + purpose + "|" + code).encode(), hashlib.sha256).hexdigest()
+        challenge_id = f"otp-{uuid.uuid4()}"
+        db.execute("INSERT INTO email_otp(challenge_id,email,purpose,code_hash,expires_at,created_at) VALUES (:i,:e,:p,:h,:x,:t)",
+                   {"i": challenge_id, "e": email, "p": purpose, "h": digest,
+                    "x": (now + timedelta(minutes=5)).isoformat(), "t": now.isoformat()})
+        app.state.send_email(email, "TuringSign PTO verification code",
+                             f"Your TuringSign PTO verification code is {code}. It expires in 5 minutes. If you did not request it, ignore this email.")
+
+    def consume_email_code(email: str, purpose: str, code: str) -> bool:
+        email = email.strip().lower()
+        if len(code) != 6 or not code.isascii() or not code.isdigit():
+            return False
+        from sqlalchemy import text as sql_text
+        with db.engine.begin() as conn:
+            row = conn.execute(sql_text("SELECT * FROM email_otp WHERE email=:e AND purpose=:p AND consumed_at IS NULL ORDER BY created_at DESC LIMIT 1 FOR UPDATE") if db.engine.dialect.name == "postgresql" else sql_text("SELECT * FROM email_otp WHERE email=:e AND purpose=:p AND consumed_at IS NULL ORDER BY created_at DESC LIMIT 1"),
+                               {"e": email, "p": purpose}).mappings().first()
+            if not row or row["attempts"] >= 5 or datetime.fromisoformat(row["expires_at"]) < datetime.now(timezone.utc):
+                return False
+            conn.execute(sql_text("UPDATE email_otp SET attempts=attempts+1 WHERE challenge_id=:i"), {"i":row["challenge_id"]})
+            digest = hmac.new(keys.session_secret, (email+"|"+purpose+"|"+code).encode(), hashlib.sha256).hexdigest()
+            if not hmac.compare_digest(digest, row["code_hash"]):
+                return False
+            conn.execute(sql_text("UPDATE email_otp SET consumed_at=:t WHERE challenge_id=:i"), {"t":utcnow(),"i":row["challenge_id"]})
+            return True
+
     @app.get("/")
     def root():
         return FileResponse(FRONTEND / "index.html")
@@ -368,7 +437,13 @@ def create_app(database_url: Optional[str] = None, data_dir: Optional[Path] = No
         db.execute("INSERT INTO principal_invitations(invite_id,email,token_hash,invited_by,expires_at,created_at) VALUES (:i,:e,:h,:p,:x,:t)", {
             "i": f"invite-{uuid.uuid4()}", "e": email, "h": sha256_text(token),
             "p": principal["principal_id"], "x": expires, "t": utcnow()})
-        return {"invitation_token": token, "email": email, "expires_at": expires, "note": "Show only once. Send using a private channel."}
+        try:
+            app.state.send_email(email, "Your TuringSign PTO invitation",
+                f"You have been invited to TuringSign PTO. Open https://pto.turingsign.com/ and select I have an invitation. Your invitation token is: {token}. Expires in 24 hours.")
+        except Exception:
+            # Do not return the token through the administrator UI or report successful delivery.
+            raise HTTPException(502, "Invitation email failed; contact administrator")
+        return {"status": "sent", "email": email, "expires_at": expires}
 
     @app.post("/v1/principals/register")
     def register_invited(req: InviteRegister):
@@ -392,6 +467,7 @@ def create_app(database_url: Optional[str] = None, data_dir: Optional[Path] = No
         qr.make(fit=True)
         buffer = io.BytesIO()
         qr.make_image(fill_color="black", back_color="white").save(buffer, format="PNG")
+        # Legacy response remains available for compatibility with the previous Alpha UI.
         return {"principal_id": pid, "email": row["email"], "totp_secret": secret,
                 "otpauth_uri": uri, "qr_data_uri": "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")}
 
@@ -431,10 +507,48 @@ def create_app(database_url: Optional[str] = None, data_dir: Optional[Path] = No
         db.execute("UPDATE principals SET is_active=1 WHERE principal_id=:p", {"p": principal["principal_id"]})
         return {"status": "active", "principal_id": principal["principal_id"]}
 
+
+    @app.post("/v1/auth/email/start")
+    def email_login_start(req: EmailCodeRequest):
+        principal = db.one("SELECT * FROM principals WHERE lower(email)=:e AND is_active=1", {"e": req.email.strip().lower()})
+        if principal and principal["principal_id"] != "principal-001" and passwords.verify(principal["password_hash"], req.password):
+            issue_email_code(principal["email"], "login")
+        return {"status": "If credentials are valid, a verification code has been sent"}
+
+    @app.post("/v1/auth/email/verify")
+    def email_login_verify(req: EmailCodeVerify, response: Response):
+        principal = db.one("SELECT * FROM principals WHERE lower(email)=:e AND is_active=1", {"e": req.email.strip().lower()})
+        if not principal or principal["principal_id"] == "principal-001" or not passwords.verify(principal["password_hash"], req.password):
+            raise HTTPException(401, "Invalid login")
+        if not consume_email_code(principal["email"], "login", req.code):
+            raise HTTPException(401, "Invalid or expired verification code")
+        token = sessions.create(principal["principal_id"])
+        response.set_cookie("pto_session", token, httponly=True, samesite="strict",
+                            secure=os.getenv("PTO_SECURE_COOKIE", "0") == "1", max_age=8 * 3600)
+        return {"status": "ok", "principal_id": principal["principal_id"]}
+
+    @app.post("/v1/principals/email-activate")
+    def email_activation(req: EmailCodeRequest):
+        principal = db.one("SELECT * FROM principals WHERE lower(email)=:e AND is_active=0", {"e": req.email.strip().lower()})
+        if principal and principal["principal_id"] != "principal-001" and passwords.verify(principal["password_hash"], req.password):
+            issue_email_code(principal["email"], "activation")
+        return {"status": "If eligible, an activation code has been sent"}
+
+    @app.post("/v1/principals/email-activate/confirm")
+    def email_activation_confirm(req: EmailCodeVerify):
+        principal = db.one("SELECT * FROM principals WHERE lower(email)=:e AND is_active=0", {"e": req.email.strip().lower()})
+        if not principal or principal["principal_id"] == "principal-001" or not passwords.verify(principal["password_hash"], req.password):
+            raise HTTPException(401, "Invalid activation")
+        if not consume_email_code(principal["email"], "activation", req.code):
+            raise HTTPException(401, "Invalid or expired verification code")
+        provision_principal(principal["principal_id"], principal["display_name"])
+        db.execute("UPDATE principals SET is_active=1 WHERE principal_id=:p", {"p": principal["principal_id"]})
+        return {"status": "active", "principal_id": principal["principal_id"]}
+
     @app.post("/v1/login")
     def login(req: LoginRequest, response: Response):
         principal = db.one("SELECT * FROM principals WHERE lower(email)=:e AND is_active=1", {"e": req.email.lower()})
-        if not principal or not passwords.verify(principal["password_hash"], req.password) or not verify_totp(principal["totp_secret"], req.code):
+        if not principal or principal["principal_id"] != "principal-001" or not passwords.verify(principal["password_hash"], req.password) or not verify_totp(principal["totp_secret"], req.code):
             raise HTTPException(401, "Invalid login")
         token = sessions.create(principal["principal_id"])
         response.set_cookie("pto_session", token, httponly=True, samesite="strict", secure=os.getenv("PTO_SECURE_COOKIE", "0") == "1", max_age=8 * 3600)
