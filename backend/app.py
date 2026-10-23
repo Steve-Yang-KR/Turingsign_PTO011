@@ -582,43 +582,6 @@ def create_app(database_url: Optional[str] = None, data_dir: Optional[Path] = No
             secure=os.getenv("PTO_SECURE_COOKIE", "0") == "1", max_age=3600)
         return {"status": "authenticated", "principal_id": principal["principal_id"]}
 
-    @app.post("/v1/auth/email/start")
-    def email_login_start(req: EmailCodeRequest):
-        principal = db.one("SELECT * FROM principals WHERE lower(email)=:e AND is_active=1", {"e": req.email.strip().lower()})
-        if principal and principal["principal_id"] != "principal-001" and passwords.verify(principal["password_hash"], req.password):
-            issue_email_code(principal["email"], "login")
-        return {"status": "If credentials are valid, a verification code has been sent"}
-
-    @app.post("/v1/auth/email/verify")
-    def email_login_verify(req: EmailCodeVerify, response: Response):
-        principal = db.one("SELECT * FROM principals WHERE lower(email)=:e AND is_active=1", {"e": req.email.strip().lower()})
-        if not principal or principal["principal_id"] == "principal-001" or not passwords.verify(principal["password_hash"], req.password):
-            raise HTTPException(401, "Invalid login")
-        if not consume_email_code(principal["email"], "login", req.code):
-            raise HTTPException(401, "Invalid or expired verification code")
-        token = sessions.create(principal["principal_id"])
-        response.set_cookie("pto_session", token, httponly=True, samesite="strict",
-                            secure=os.getenv("PTO_SECURE_COOKIE", "0") == "1", max_age=8 * 3600)
-        return {"status": "ok", "principal_id": principal["principal_id"]}
-
-    @app.post("/v1/principals/email-activate")
-    def email_activation(req: EmailCodeRequest):
-        principal = db.one("SELECT * FROM principals WHERE lower(email)=:e AND is_active=0", {"e": req.email.strip().lower()})
-        if principal and principal["principal_id"] != "principal-001" and passwords.verify(principal["password_hash"], req.password):
-            issue_email_code(principal["email"], "activation")
-        return {"status": "If eligible, an activation code has been sent"}
-
-    @app.post("/v1/principals/email-activate/confirm")
-    def email_activation_confirm(req: EmailCodeVerify):
-        principal = db.one("SELECT * FROM principals WHERE lower(email)=:e AND is_active=0", {"e": req.email.strip().lower()})
-        if not principal or principal["principal_id"] == "principal-001" or not passwords.verify(principal["password_hash"], req.password):
-            raise HTTPException(401, "Invalid activation")
-        if not consume_email_code(principal["email"], "activation", req.code):
-            raise HTTPException(401, "Invalid or expired verification code")
-        provision_principal(principal["principal_id"], principal["display_name"])
-        db.execute("UPDATE principals SET is_active=1 WHERE principal_id=:p", {"p": principal["principal_id"]})
-        return {"status": "active", "principal_id": principal["principal_id"]}
-
     @app.post("/v1/login")
     def login(req: LoginRequest, response: Response):
         principal = db.one("SELECT * FROM principals WHERE lower(email)=:e AND is_active=1", {"e": req.email.lower()})
