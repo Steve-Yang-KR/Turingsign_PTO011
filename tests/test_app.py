@@ -168,3 +168,10 @@ def test_email_shaped_test_user_id_and_password_length(tmp_path, monkeypatch):
     assert login.status_code == 200, login.text
     row = app.state.db.one("SELECT email FROM principals WHERE principal_id=:p", {"p":created.json()["principal_id"]})
     assert row["email"] == "test:sample@example.com"
+
+
+def test_removed_email_login_and_activation_routes(tmp_path):
+    c, app = client(tmp_path)
+    for route in ("/v1/auth/email/start", "/v1/auth/email/verify",
+                  "/v1/principals/email-activate", "/v1/principals/email-activate/confirm"):
+        assert c.post(route, json={}).status_code == 404
