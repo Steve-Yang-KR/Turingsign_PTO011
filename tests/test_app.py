@@ -128,3 +128,39 @@ def test_admin_remove_permanently_deletes_account(tmp_path):
     assert app.state.db.one("SELECT agent_id FROM agents WHERE principal_id=:p",{"p":pid}) is None
     assert app.state.db.one("SELECT policy_id FROM policy_versions WHERE principal_id=:p",{"p":pid}) is None
     assert c.get('/v1/admin/principals').status_code == 200
+
+def test_smtp_sender_requires_configuration(tmp_path, monkeypatch):
+    c, app = client(tmp_path)
+    monkeypatch.delenv("PTO_SMTP_USER", raising=False)
+    monkeypatch.delenv("PTO_SMTP_APP_PASSWORD", raising=False)
+    from fastapi import HTTPException
+    try:
+        app.state.send_email("test@example.com", "Test", "Body")
+        assert False, "Expected a configuration error"
+    except HTTPException as err:
+        assert err.status_code == 503
+
+
+def test_smtp_email_sender_uses_tls(tmp_path, monkeypatch):
+    import smtplib
+    c, app = client(tmp_path)
+    monkeypatch.setenv("PTO_SMTP_USER", "sender@gmail.com")
+    monkeypatch.setenv("PTO_SMTP_APP_PASSWORD", "fake-test-only-app-password")
+    monkeypatch.setenv("PTO_EMAIL_FROM", "sender@gmail.com")
+    monkeypatch.setenv("PTO_SMTP_PORT", "587")
+    sent = []
+    class FakeSMTP:
+        def __init__(self, host, port, timeout):
+            assert host == "smtp.gmail.com" and port == 587
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def ehlo(self): pass
+        def starttls(self, context): assert context
+        def login(self, username, password):
+            assert username == "sender@gmail.com"
+        def send_message(self, msg):
+            sent.append(msg)
+    monkeypatch.setattr(smtplib, "SMTP", FakeSMTP)
+    app.state.send_email("recipient@example.com", "PTO test", "Nonsecret content")
+    assert len(sent) == 1
+    assert sent[0]["To"] == "recipient@example.com"
