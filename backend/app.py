@@ -557,7 +557,7 @@ def create_app(database_url: Optional[str] = None, data_dir: Optional[Path] = No
         if os.getenv("PTO_ENABLE_TEST_SIGNUP", "0") != "1":
             raise HTTPException(404, "Test signup disabled")
         # Alpha only: username is stored in the existing email login field to avoid a schema migration.
-        username = req.username.strip().lower()
+        username = "test:" + req.username.strip().lower()
         from sqlalchemy import text as sql_text
         pid = f"principal-{uuid.uuid4().hex[:16]}"
         with db.engine.begin() as conn:
@@ -574,7 +574,7 @@ def create_app(database_url: Optional[str] = None, data_dir: Optional[Path] = No
     def test_password_login(req: TestPasswordLogin, response: Response):
         if os.getenv("PTO_ENABLE_TEST_SIGNUP", "0") != "1":
             raise HTTPException(404, "Test login disabled")
-        principal = db.one("SELECT * FROM principals WHERE lower(email)=:e AND is_active=1", {"e": req.username.strip().lower()})
+        principal = db.one("SELECT * FROM principals WHERE lower(email)=:e AND is_active=1", {"e": "test:" + req.username.strip().lower()})
         if not principal or principal["principal_id"] == "principal-001" or not passwords.verify(principal["password_hash"], req.password):
             raise HTTPException(401, "Invalid credentials")
         token = sessions.create(principal["principal_id"])
