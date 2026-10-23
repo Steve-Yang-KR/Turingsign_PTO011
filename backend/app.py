@@ -52,7 +52,7 @@ class TestPasswordLogin(BaseModel):
     password: str
 
 class ApproveUserEmail(BaseModel):
-    email: str = Field(min_length=6, max_length=254, pattern=r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$")
+    email: str = Field(min_length=6, max_length=254, pattern=r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
     totp_code: str
 
 class AdminRemovePrincipal(BaseModel):
