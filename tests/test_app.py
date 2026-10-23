@@ -128,3 +128,29 @@ def test_admin_remove_permanently_deletes_account(tmp_path):
     assert app.state.db.one("SELECT agent_id FROM agents WHERE principal_id=:p",{"p":pid}) is None
     assert app.state.db.one("SELECT policy_id FROM policy_versions WHERE principal_id=:p",{"p":pid}) is None
     assert c.get('/v1/admin/principals').status_code == 200
+
+
+def test_self_signup_disabled_by_default(tmp_path, monkeypatch):
+    monkeypatch.delenv("PTO_ENABLE_TEST_SIGNUP", raising=False)
+    c, app = client(tmp_path)
+    r = c.post("/v1/auth/test-signup", json={"username":"person01","display_name":"Test Person","password":"LongTestPassword123!"})
+    assert r.status_code == 404
+
+
+def test_self_signup_and_password_login(tmp_path, monkeypatch):
+    monkeypatch.setenv("PTO_ENABLE_TEST_SIGNUP", "1")
+    c, app = client(tmp_path)
+    activate(c, app)
+    account = {"username":"person01","display_name":"Test Person","password":"LongTestPassword123!"}
+    r = c.post("/v1/auth/test-signup", json=account)
+    assert r.status_code == 200, r.text
+    pid = r.json()["principal_id"]
+    assert pid != "principal-001"
+    assert app.state.db.one("SELECT principal_id FROM principals WHERE principal_id=:p", {"p":pid})
+    assert c.post("/v1/auth/test-signup", json=account).status_code == 409
+    bad = c.post("/v1/auth/test-login", json={"username":"person01","password":"wrongPassword123"})
+    assert bad.status_code == 401
+    ok = c.post("/v1/auth/test-login", json={"username":"person01","password":account["password"]})
+    assert ok.status_code == 200
+    assert ok.json()["principal_id"] == pid
+    assert c.post("/v1/auth/test-login", json={"username":"p@example.com","password":"LongEnoughPassword!"}).status_code == 401
