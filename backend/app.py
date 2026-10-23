@@ -312,21 +312,46 @@ def create_app(database_url: Optional[str] = None, data_dir: Optional[Path] = No
 
 
     def email_sender(to: str, subject: str, body: str) -> None:
-        api_key = os.getenv("RESEND_API_KEY")
-        sender = os.getenv("PTO_EMAIL_FROM")
-        if not api_key or not sender:
-            raise HTTPException(503, "Email delivery is not configured")
-        payload = json.dumps({"from": sender, "to": [to], "subject": subject, "text": body}).encode()
-        req = urllib.request.Request("https://api.resend.com/emails", data=payload,
-            headers={"Authorization": "Bearer " + api_key, "Content-Type": "application/json"}, method="POST")
+        """HTTPS transactional email. Postmark requires a verified Sender Signature."""
+        import urllib.error
+        provider = os.getenv("PTO_EMAIL_PROVIDER", "postmark").lower()
+        sender = os.getenv("PTO_EMAIL_FROM", "").strip()
+        if not sender:
+            raise HTTPException(503, "Email sender not configured")
+        if provider == "postmark":
+            token = os.getenv("POSTMARK_SERVER_TOKEN", "")
+            if not token:
+                raise HTTPException(503, "Postmark API token not configured")
+            url = "https://api.postmarkapp.com/email"
+            payload = {"From": sender, "To": to, "Subject": subject, "TextBody": body, "MessageStream": "outbound"}
+            headers = {"X-Postmark-Server-Token": token, "Content-Type": "application/json",
+                       "Accept": "application/json"}
+        elif provider == "resend":
+            token = os.getenv("RESEND_API_KEY", "")
+            if not token:
+                raise HTTPException(503, "Resend API token not configured")
+            url = "https://api.resend.com/emails"
+            payload = {"from": sender, "to": [to], "subject": subject, "text": body}
+            headers = {"Authorization": "Bearer " + token, "Content-Type": "application/json"}
+        else:
+            raise HTTPException(503, "Unsupported email provider")
+        req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"),
+                                     headers=headers, method="POST")
         try:
-            with urllib.request.urlopen(req, timeout=10) as response:
-                if response.status not in (200, 201):
-                    raise HTTPException(502, "Email delivery failed")
+            with urllib.request.urlopen(req, timeout=12) as response:
+                if response.status not in (200, 201, 202):
+                    raise HTTPException(502, "Email provider rejected request")
+                if provider == "postmark":
+                    result = json.loads(response.read().decode("utf-8"))
+                    if result.get("ErrorCode") != 0:
+                        raise HTTPException(502, "Email provider rejected request")
+        except urllib.error.HTTPError as exc:
+            # Do not expose recipient addresses, OTPs, invitation tokens, or API credentials.
+            raise HTTPException(502, f"Email provider request failed (HTTP {exc.code})")
         except HTTPException:
             raise
-        except Exception:
-            raise HTTPException(502, "Email delivery failed")
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+            raise HTTPException(502, "Email provider request failed")
 
     app.state.send_email = email_sender
 
