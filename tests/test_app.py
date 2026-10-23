@@ -128,3 +128,40 @@ def test_admin_remove_permanently_deletes_account(tmp_path):
     assert app.state.db.one("SELECT agent_id FROM agents WHERE principal_id=:p",{"p":pid}) is None
     assert app.state.db.one("SELECT policy_id FROM policy_versions WHERE principal_id=:p",{"p":pid}) is None
     assert c.get('/v1/admin/principals').status_code == 200
+
+def test_postmark_https_email_transport(tmp_path, monkeypatch):
+    from unittest.mock import patch
+    import io
+    import json
+    c, app = client(tmp_path)
+    monkeypatch.setenv("PTO_EMAIL_PROVIDER", "postmark")
+    monkeypatch.setenv("POSTMARK_SERVER_TOKEN", "unit-test-only-token")
+    monkeypatch.setenv("PTO_EMAIL_FROM", "verified@example.com")
+    calls = []
+    class Reply:
+        status = 200
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def read(self): return json.dumps({"ErrorCode":0,"Message":"OK"}).encode()
+    def fake_open(req, timeout):
+        calls.append(req)
+        return Reply()
+    with patch("urllib.request.urlopen", fake_open):
+        app.state.send_email("recipient@example.com", "PTO test", "Body")
+    assert len(calls) == 1
+    assert calls[0].full_url == "https://api.postmarkapp.com/email"
+    assert json.loads(calls[0].data)["To"] == "recipient@example.com"
+    assert calls[0].get_header("X-postmark-server-token") == "unit-test-only-token"
+
+
+def test_postmark_requires_configuration(tmp_path, monkeypatch):
+    from fastapi import HTTPException
+    c, app = client(tmp_path)
+    monkeypatch.setenv("PTO_EMAIL_PROVIDER", "postmark")
+    monkeypatch.delenv("POSTMARK_SERVER_TOKEN", raising=False)
+    monkeypatch.setenv("PTO_EMAIL_FROM", "verified@example.com")
+    try:
+        app.state.send_email("recipient@example.com", "Test", "Body")
+        assert False, "Expected missing token to be rejected"
+    except HTTPException as exc:
+        assert exc.status_code == 503
